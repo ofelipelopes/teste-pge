@@ -105,6 +105,11 @@ Esses limites não são necessários para a suíte offline, mas impedem que uma 
 consuma um período extenso. A paginação com várias páginas é coberta pelos testes; amplie
 os ceilings somente quando a consulta real exigir isso conscientemente.
 
+Os ceilings são guardrails: se a resposta exigir mais páginas, registros, tempo ou bytes,
+a execução falha explicitamente e não publica um artefato truncado como completo. Se o
+`.env` for alterado após a criação dos containers, aplique a nova configuração com
+`docker compose up -d --wait --wait-timeout 180 --force-recreate`.
+
 Defina as senhas antes do primeiro `docker compose up`. O PostgreSQL preserva as
 credenciais no volume `postgres_data`; editar o `.env` depois não rotaciona a senha já
 gravada. Se isso acontecer, restaure o valor anterior ou altere a senha no banco. Remover
