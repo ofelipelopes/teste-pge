@@ -1,0 +1,21 @@
+\set ON_ERROR_STOP on
+
+BEGIN;
+
+CREATE SCHEMA IF NOT EXISTS ops AUTHORIZATION :"app_user";
+CREATE SCHEMA IF NOT EXISTS staging AUTHORIZATION :"app_user";
+CREATE SCHEMA IF NOT EXISTS quality AUTHORIZATION :"app_user";
+CREATE SCHEMA IF NOT EXISTS curated AUTHORIZATION :"app_user";
+
+CREATE TABLE IF NOT EXISTS ops.schema_migration (
+    version TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE ops.schema_migration OWNER TO :"app_user";
+
+INSERT INTO ops.schema_migration (version)
+VALUES ('0001_foundation')
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;

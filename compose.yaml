@@ -1,0 +1,155 @@
+name: pncp-etl
+
+x-airflow-environment: &airflow-environment
+  AIRFLOW_HOME: /opt/airflow
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__PARALLELISM: "4"
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/config/simple_auth_passwords.json
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD is required}@postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+  AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_PORT:-8080}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?AIRFLOW_JWT_SECRET is required}
+  AIRFLOW_CONN_PNCP_DB: postgresql://${PNCP_DB_USER:-pncp_app}:${PNCP_DB_PASSWORD:?PNCP_DB_PASSWORD is required}@postgres:5432/${PNCP_DB_NAME:-pncp}
+  AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?AIRFLOW_ADMIN_PASSWORD is required}
+  PNCP_RUNTIME_ROOT: /opt/airflow/runtime
+  AIRFLOW_VAR_PNCP_API_URL: ${PNCP_API_URL:-https://pncp.gov.br/api/consulta/v1/atas}
+  AIRFLOW_VAR_PNCP_UPDATE_API_URL: ${PNCP_UPDATE_API_URL:-https://pncp.gov.br/api/consulta/v1/atas/atualizacao}
+  AIRFLOW_VAR_PNCP_SCHEDULE_CNPJ: ${PNCP_SCHEDULE_CNPJ:-}
+  AIRFLOW_VAR_PNCP_SCHEDULE_QUERY_MODE: ${PNCP_SCHEDULE_QUERY_MODE:-vigencia}
+  AIRFLOW_VAR_PNCP_INCREMENTAL_LOOKBACK_DAYS: ${PNCP_INCREMENTAL_LOOKBACK_DAYS:-2}
+  AIRFLOW_VAR_PNCP_BATCH_SIZE: ${PNCP_BATCH_SIZE:-1000}
+  PNCP_DAG_SCHEDULE: ${PNCP_DAG_SCHEDULE:-0 6 * * *}
+  PNCP_PAGE_SIZE: ${PNCP_PAGE_SIZE:-100}
+  PNCP_MAX_PAGES: ${PNCP_MAX_PAGES:-1000}
+  PNCP_MAX_RECORDS: ${PNCP_MAX_RECORDS:-100000}
+  PNCP_MAX_DURATION_SECONDS: ${PNCP_MAX_DURATION_SECONDS:-1800}
+  PNCP_MAX_ARTIFACT_BYTES: ${PNCP_MAX_ARTIFACT_BYTES:-2147483648}
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    target: final
+  image: pge-pncp-etl:local
+  environment: *airflow-environment
+  user: "50000:50000"
+  volumes:
+    - airflow_config:/opt/airflow/config
+    - airflow_logs:/opt/airflow/logs
+    - pipeline_runtime:/opt/airflow/runtime
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16.15-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?POSTGRES_SUPERUSER_PASSWORD is required}
+      POSTGRES_DB: postgres
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  db-init:
+    image: postgres:16.15-bookworm
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_SUPERUSER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_SUPERUSER_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?POSTGRES_SUPERUSER_PASSWORD is required}
+      AIRFLOW_DB_NAME: ${AIRFLOW_DB_NAME:-airflow}
+      AIRFLOW_DB_USER: ${AIRFLOW_DB_USER:-airflow}
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD is required}
+      PNCP_DB_NAME: ${PNCP_DB_NAME:-pncp}
+      PNCP_DB_USER: ${PNCP_DB_USER:-pncp_app}
+      PNCP_DB_PASSWORD: ${PNCP_DB_PASSWORD:?PNCP_DB_PASSWORD is required}
+    volumes:
+      - ./docker/postgres:/bootstrap:ro
+      - ./sql/migrations:/migrations:ro
+    command: ["bash", "/bootstrap/init-databases.sh"]
+    restart: "no"
+
+  airflow-init:
+    <<: *airflow-common
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - python /app/docker/airflow/configure_simple_auth.py && airflow db migrate
+    restart: "no"
+
+  airflow-api-server:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["airflow", "api-server", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health', timeout=5).read()
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  airflow-scheduler:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["airflow", "scheduler"]
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--local"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["airflow", "dag-processor"]
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "DagProcessorJob", "--local"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  test:
+    build:
+      context: .
+      target: test
+    image: pge-pncp-etl-test:local
+    profiles: ["test"]
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment: *airflow-environment
+    command:
+      - sh
+      - -c
+      - uv lock --check && uv run --locked pytest && uv run --locked ruff check .
+    restart: "no"
+
+volumes:
+  airflow_config:
+  airflow_logs:
+  pipeline_runtime:
+  postgres_data:

@@ -1,0 +1,1 @@
+"""Pipeline stage entry points."""

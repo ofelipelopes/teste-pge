@@ -1,0 +1,37 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Private business, challenge, and AI material
+/private/
+/prompts/
+/ai-prompts/
+/docs/private/
+/docs/prd-versao-final.md
+/docs/architecture/adr/
+/Prompt_PRD_SDD_*.md
+/*.pdf
+
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local runtime data and generated artifacts
+/runtime/
+/artifacts/
+*.log
+logs/
+
+# Local editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
